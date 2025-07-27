@@ -7,14 +7,13 @@ RUN go mod download
 
 COPY . .
 
-RUN go build -o app
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o app .
 
-# Stage 2: Run the Go binary in a minimal container
-FROM debian:bullseye-slim
-
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+FROM alpine:latest
 
 WORKDIR /app
+
+RUN apk --no-cache add ca-certificates
 
 COPY --from=builder /app/app .
 

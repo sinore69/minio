@@ -9,27 +9,34 @@ import (
 	"os"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 var (
 	minioClient *minio.Client
-	bucketName  = os.Getenv("MINIO_BUCKET")
+	bucketName  string
 )
 
 func main() {
+	// Load .env file
+	err := godotenv.Load()
+	if err != nil {
+		log.Println("No .env file found or failed to load it")
+	}
+
 	endpoint := os.Getenv("MINIO_ENDPOINT")
 	accessKey := os.Getenv("MINIO_ACCESS_KEY")
 	secretKey := os.Getenv("MINIO_SECRET_KEY")
+	bucketName = os.Getenv("MINIO_BUCKET")
 
 	if endpoint == "" || accessKey == "" || secretKey == "" || bucketName == "" {
 		log.Fatal("One or more required environment variables are missing")
 	}
 
-	// Retry loop: wait for MinIO to be ready
+	// Retry logic
 	for {
-		var err error
 		minioClient, err = minio.New(endpoint, &minio.Options{
 			Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
 			Secure: false,
@@ -44,21 +51,28 @@ func main() {
 
 	// Ensure bucket exists
 	ctx := context.Background()
-	exists, err := minioClient.BucketExists(ctx, bucketName)
-	if err != nil {
-		log.Fatalf("BucketExists error: %v", err)
-	}
-	if !exists {
-		err := minioClient.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
-		if err != nil {
-			log.Fatalf("MakeBucket error: %v", err)
+	for i := 0; i < 10; i++ {
+		exists, err := minioClient.BucketExists(ctx, bucketName)
+		if err == nil {
+			if !exists {
+				err := minioClient.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
+				if err != nil {
+					log.Fatalf("MakeBucket error: %v", err)
+				}
+				log.Printf("Created bucket: %s\n", bucketName)
+			} else {
+				log.Printf("Bucket already exists: %s\n", bucketName)
+			}
+			break
 		}
-		log.Printf("Created bucket: %s\n", bucketName)
-	} else {
-		log.Printf("Bucket already exists: %s\n", bucketName)
+		log.Printf("BucketExists error: %v (attempt %d/10). Retrying in 2s...", err, i+1)
+		time.Sleep(2 * time.Second)
+
+		if i == 9 {
+			log.Fatalf("Failed to connect to MinIO after 10 attempts: %v", err)
+		}
 	}
 
-	// Set up HTTP routes
 	http.HandleFunc("/upload", uploadHandler)
 	http.HandleFunc("/download", downloadHandler)
 	http.HandleFunc("/list", listHandler)
@@ -75,7 +89,6 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Upload file
 	_, err := minioClient.PutObject(ctx, bucketName, objectName, r.Body, -1, minio.PutObjectOptions{})
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Upload failed: %v", err), http.StatusInternalServerError)
@@ -115,3 +128,4 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, obj.Key)
 	}
 }
+
